@@ -1,0 +1,237 @@
+Ниже — проработанная модель данных под ваш MVP проката VR‑оборудования (включая HTC Vive), с учётом того, что вы делаете в pgAdmin, без soft delete, и планируете CRUD для оборудования и клиентов. Я разбила на таблицы, дала поля, типы, ключи и пояснение, зачем каждое поле нужно именно для ваших сценариев.
+
+---
+
+## Equipment (единицы оборудования)
+
+Это «инвентарная» сущность: одна строка = один конкретный комплект (не модель).
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` / `BIGINT` | NO | PK |
+| `model_name` | `VARCHAR(100)` | NO | Модель (например, HTC Vive Pro) — для каталога и отчётов |
+| `serial_number` | `VARCHAR(50)` | YES | Заводской серийный номер (для гарантии/сервиса) |
+| `inventory_number` | `VARCHAR(50)` | NO | Ваш внутренний инвентарный номер — основной идентификатор для выдачи/возврата |
+| `status` | `VARCHAR(20)` | NO | `in_stock` / `rented` / `repair` / `decommissioned` — статусы без soft delete |
+| `location` | `VARCHAR(100)` | YES | Склад, точка выдачи, «в пути» — помогает при планировании логистики |
+| `purchase_date` | `DATE` | YES | Для расчёта амортизации и планирования замены |
+| `price_per_day` | `NUMERIC(10,2)` | NO | Тариф за сутки (может быть переопределён в заказе, но удобно хранить здесь) |
+| `is_active` | `BOOLEAN` | NO | TRUE, если оборудование доступно для аренды (аналог «не списано») |
+| `created_at` | `TIMESTAMP` | NO | Для аудита |
+| `updated_at` | `TIMESTAMP` | NO | Для синхронизации и кэширования |
+
+**Зачем:** вы сможете однозначно идентифицировать каждый комплект по `inventory_number`, не допускать двойных бронирований и быстро фильтровать по статусу и локации.
+
+---
+
+## EquipmentComponents (комплектация одного комплекта)
+
+VR‑комплект — это набор: шлем, контроллеры, базовые станции, кабели. Лучше хранить это не текстом, а отдельными строками.
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `equipment_id` | `BIGINT` | NO | FK → Equipment.id |
+| `component_type` | `VARCHAR(50)` | NO | Например: `HEADSET`, `CONTROLLER_L`, `CONTROLLER_R`, `BASE_STATION`, `CABLE_POWER` и т.п. |
+| `serial_number` | `VARCHAR(50)` | YES | Если у компонента есть свой серийный номер |
+| `condition_note` | `TEXT` | YES | Краткое примечание (например, «потёртость корпуса») |
+| `created_at` | `TIMESTAMP` | NO | |
+
+**Зачем:** при выдаче/возврате кладовщик может быстро проверить комплектность по типам компонентов, а не «на глаз». Это снижает споры о некомплекте.
+
+---
+
+## Clients (клиенты)
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `client_type` | `VARCHAR(20)` | NO | `individual` / `company` — влияет на форму заказа и документы |
+| `first_name` | `VARCHAR(100)` | YES | Физлицо |
+| `last_name` | `VARCHAR(100)` | YES | Физлицо |
+| `company_name` | `VARCHAR(150)` | YES | Юрлицо |
+| `contact_phone` | `VARCHAR(30)` | NO | Основной телефон |
+| `contact_email` | `VARCHAR(100)` | YES | Email для уведомлений |
+| `inn` | `VARCHAR(20)` | YES | ИНН для юрлиц (для закрывающих документов) |
+| `address` | `TEXT` | YES | Адрес для доставки/вывоза |
+| `notes` | `TEXT` | YES | Заметки менеджера (например, «всегда самовывоз», «работает только по будням») |
+| `created_at` | `TIMESTAMP` | NO | |
+| `updated_at` | `TIMESTAMP` | NO | |
+
+**Зачем:** разделение на типы клиентов позволяет гибко формировать документы и сценарии (физлицам — короткая форма, юрлицам — реквизиты).
+
+---
+
+## Orders (заказы)
+
+Главная таблица, связывающая клиента и оборудование.
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `client_id` | `BIGINT` | NO | FK → Clients.id |
+| `status` | `VARCHAR(30)` | NO | `new` / `confirmed` / `issued` / `returned` / `cancelled` / `overdue` |
+| `rent_start` | `TIMESTAMP` | NO | Дата и время начала аренды (UTC) |
+| `rent_end` | `TIMESTAMP` | NO | Дата и время окончания аренды (UTC) |
+| `rent_days` | `INTEGER` | NO | Рассчитывается автоматически — для тарифов и отчётов |
+| `deposit_amount` | `NUMERIC(10,2)` | NO | Сумма залога (фиксируется при подтверждении) |
+| `total_price` | `NUMERIC(10,2)` | YES | Итоговая стоимость (может меняться при продлении/штрафах) |
+| `payment_status` | `VARCHAR(20)` | YES | `unpaid` / `prepaid` / `paid` / `refunded` |
+| `delivery_type` | `VARCHAR(20)` | YES | `self_pickup` / `delivery` / `on_site` |
+| `comments` | `TEXT` | YES | Комментарии клиента и менеджера (договорились о времени, особые условия) |
+| `responsible_manager_id` | `BIGINT` | YES | ID менеджера, который ведёт заказ (если есть учёт пользователей) |
+| `created_at` | `TIMESTAMP` | NO | |
+| `updated_at` | `TIMESTAMP` | NO | |
+
+**Зачем:** статусы и даты позволяют реализовать проверку доступности и автоматическое определение «просрочено».
+
+---
+
+## OrderEquipment (связь «многие‑ко‑многим»: заказ и конкретные единицы оборудования)
+
+Один заказ может включать несколько комплектов.
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `order_id` | `BIGINT` | NO | FK → Orders.id, PK |
+| `equipment_id` | `BIGINT` | NO | FK → Equipment.id, PK |
+| `rent_start` | `TIMESTAMP` | NO | Дублируется из Orders для удобства отчётов и расширений (например, разные даты для разных комплектов) |
+| `rent_end` | `TIMESTAMP` | NO | Аналогично |
+| `expected_return_status` | `VARCHAR(20)` | YES | Например, «возврат на склад А» — полезно при сложной логистике |
+
+**Зачем:** это позволяет точно знать, какой именно комплект (по инвентарному номеру) выдан в каком заказе — основа для исключения двойных бронирований.
+
+---
+
+## ChecklistItems (справочник пунктов чек‑листа)
+
+Типовые пункты осмотра, которые можно переиспользовать.
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `name` | `VARCHAR(100)` | NO | Название пункта (например, «шлем без царапин») |
+| `category` | `VARCHAR(30)` | YES | `appearance` / `functionality` / `completeness` — для группировки в интерфейсе |
+| `default_required` | `BOOLEAN` | NO | Обязателен ли по умолчанию при выдаче/возврате |
+| `description` | `TEXT` | YES | Подсказка кладовщику (как проверить) |
+
+**Зачем:** стандартизирует осмотр и снижает человеческий фактор.
+
+---
+
+## OrderChecklist (результаты осмотра по заказу)
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `order_id` | `BIGINT` | NO | FK → Orders.id |
+| `checklist_item_id` | `BIGINT` | NO | FK → ChecklistItems.id |
+| `result` | `VARCHAR(20)` | NO | `ok` / `defect` / `missing` |
+| `comment` | `TEXT` | YES | Описание дефекта или примечание |
+| `photo_url` | `VARCHAR(512)` | YES | Ссылка на фото (в S3/MinIO/локальном хранилище) |
+| `checked_by` | `BIGINT` | YES | ID сотрудника (если есть учёт пользователей) |
+| `checked_at` | `TIMESTAMP` | NO | Время фиксации |
+
+**Зачем:** юридически фиксирует состояние при выдаче/возврате, служит доказательством при спорах.
+
+---
+
+## Incidents (инциденты и дефекты)
+
+Отдельная сущность для учёта поломок и ремонтов (не путать с чек‑листом при возврате).
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `equipment_id` | `BIGINT` | NO | FK → Equipment.id |
+| `incident_type` | `VARCHAR(50)` | NO | `damage` / `malfunction` / `theft` / `wear` |
+| `description` | `TEXT` | NO | Подробное описание проблемы |
+| `reported_by` | `BIGINT` | YES | Кто сообщил (клиент, кладовщик) |
+| `reported_at` | `TIMESTAMP` | NO | Когда сообщили |
+| `status` | `VARCHAR(30)` | NO | `reported` / `diagnostics` / `repair_in_progress` / `tested` / `resolved` |
+| `repair_cost` | `NUMERIC(10,2)` | YES | Стоимость ремонта (если известна) |
+| `repair_notes` | `TEXT` | YES | Заметки мастера, акт выполненных работ |
+| `resolved_at` | `TIMESTAMP` | YES | Дата закрытия инцидента |
+| `created_at` | `TIMESTAMP` | NO | |
+| `updated_at` | `TIMESTAMP` | NO | |
+
+**Зачем:** позволяет вести историю поломок по каждому инвентарному номеру, анализировать частые дефекты и планировать замену оборудования.
+
+---
+
+## RepairTasks (задачи ремонта — опционально, если хотите детализацию)
+
+Если ремонт сложный и состоит из нескольких этапов.
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `incident_id` | `BIGINT` | NO | FK → Incidents.id |
+| `task_description` | `TEXT` | NO | Что нужно сделать |
+| `assigned_to` | `BIGINT` | YES | Ответственный мастер |
+| `status` | `VARCHAR(30)` | NO | `pending` / `in_progress` / `done` |
+| `completed_at` | `TIMESTAMP` | YES | |
+
+Можно не делать сразу: на MVP достаточно Incidents с полем `repair_notes`.
+
+---
+
+## StatusHistory (история изменений статусов — опционально)
+
+Если нужно видеть, кто и когда менял статус (аудит).
+
+| Поле | Тип | Nullable | Комментарий |
+|------|-----|----------|-----------|
+| `id` | `SERIAL` | NO | PK |
+| `entity_type` | `VARCHAR(20)` | NO | `order` / `equipment` / `incident` |
+| `entity_id` | `BIGINT` | NO | ID сущности |
+| `old_status` | `VARCHAR(50)` | YES | Предыдущий статус |
+| `new_status` | `VARCHAR(50)` | NO | Новый статус |
+| `changed_by` | `BIGINT` | YES | ID пользователя |
+| `changed_at` | `TIMESTAMP` | NO | |
+| `reason` | `TEXT` | YES | Причина изменения (комментарий) |
+
+На MVP можно не делать: достаточно `updated_at` и комментариев к заказу.
+
+---
+
+## Важные SQL‑нюансы под ваши задачи
+
+1. **Проверка доступности (чтобы не было двойных бронирований):**
+
+```sql
+SELECT e.*
+FROM equipment e
+LEFT JOIN order_equipment oe ON e.id = oe.equipment_id
+  AND NOT (oe.rent_end <= $start OR oe.rent_start >= $end)
+  AND oe.order_id IN (
+    SELECT id FROM orders
+    WHERE status IN ('confirmed', 'issued')
+  )
+WHERE oe.id IS NULL
+  AND e.status = 'in_stock'
+  AND e.is_active = TRUE;
+```
+
+Этот запрос вернёт только реально свободные комплекты на выбранный интервал.
+
+2. **Уникальность инвентарного номера:**
+
+```sql
+ALTER TABLE equipment ADD CONSTRAINT unique_inventory_number UNIQUE (inventory_number);
+```
+
+3. **Составной уникальный ключ для OrderEquipment:**
+
+```sql
+ALTER TABLE order_equipment ADD PRIMARY KEY (order_id, equipment_id);
+```
+
+---
+
+## Как это ложится на то, что вы уже делаете
+
+- **Без soft delete:** статусы (`status`, `is_active`) и история (`StatusHistory` опционально) решают задачу учёта вместо удаления строк.
+- **CRUD для оборудования и клиентов:** таблицы `Equipment` и `Clients` — это ваши основные сущности CRUD.
+- **База для отчётов:** поля `rent_start`, `rent_end`, `status`, `deposit_amount`, `total_price` позволяют сразу строить отчёты по загрузке и выручке.
+- **VR‑специфика:** `EquipmentComponents` закрывает типовую проблему «некомплект» при выдаче/возврате VR‑комплектов.
